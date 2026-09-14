@@ -76,7 +76,7 @@ def init_distributed_from_slurm(
     os.environ.setdefault(
         "MASTER_PORT", master_port or os.environ.get("MASTER_PORT", DEFAULT_MASTER_PORT)
     )
-    # torch reads RANK / WORLD_SIZE from the environment for env:// rendezvous.
+    # torch reads these for env:// rendezvous.
     os.environ["RANK"] = str(rank)
     os.environ["WORLD_SIZE"] = str(world_size)
     os.environ["LOCAL_RANK"] = str(local_rank)
@@ -85,9 +85,7 @@ def init_distributed_from_slurm(
         backend = "nccl" if torch.cuda.is_available() else "gloo"
 
     if torch.cuda.is_available():
-        # If SLURM exposes all node GPUs to every task, local_rank selects the
-        # GPU; if it binds one GPU per task, only device 0 is visible. Modulo
-        # keeps the index valid in both layouts.
+        # Modulo keeps the index valid whether all node GPUs or one per task are visible.
         torch.cuda.set_device(local_rank % torch.cuda.device_count())
 
     if world_size > 1 and not dist.is_initialized():
