@@ -1,7 +1,9 @@
 """Bootstrap a ``torch.distributed`` process group from SLURM environment variables.
 
-Intended for launching one MTEB evaluation per rank with ``srun`` (one task per
-GPU). See ``scripts/run_distributed_retrieval.py`` for a usage example.
+Used to run a single MTEB task evaluation across many ranks (SPMD): the same
+evaluation script runs on every rank launched by ``srun`` (one rank per GPU), and
+the ranks cooperate via collectives to share the work of that one task. See
+``scripts/run_distributed_retrieval.py`` for a usage example.
 """
 
 from __future__ import annotations
