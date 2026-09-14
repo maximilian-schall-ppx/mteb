@@ -49,6 +49,12 @@ def parse_args() -> argparse.Namespace:
         "affect corpus encoding (the part being scaled).",
     )
     p.add_argument("--backend", choices=["auto", "nccl", "gloo"], default="gloo")
+    p.add_argument(
+        "--baseline",
+        action="store_true",
+        help="Run the raw model through the stock mteb.evaluate path (no wrapper, "
+        "single process) to measure a 1-GPU baseline.",
+    )
     return p.parse_args()
 
 
@@ -58,20 +64,27 @@ def main() -> None:
 
     import torch
 
-    backend = None if args.backend == "auto" else args.backend
-    info = init_distributed_from_slurm(backend=backend)
-    n_gpu = max(1, torch.cuda.device_count())
-    device = f"cuda:{info.local_rank % n_gpu}"
-
-    model = mteb.get_model(args.model, device=device)
-    search_model = DistributedSearchWrapper(model, shard=args.shard)
+    if args.baseline:
+        device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        model = mteb.get_model(args.model, device=device)
+        search_model = model  # default mteb path, no distributed wrapper
+        world_size, is_main_rank = 1, True
+    else:
+        backend = None if args.backend == "auto" else args.backend
+        info = init_distributed_from_slurm(backend=backend)
+        n_gpu = max(1, torch.cuda.device_count())
+        device = f"cuda:{info.local_rank % n_gpu}"
+        model = mteb.get_model(args.model, device=device)
+        search_model = DistributedSearchWrapper(model, shard=args.shard)
+        world_size, is_main_rank = info.world_size, info.is_main
 
     task = mteb.get_task(args.task)
     if args.cap_top_k is not None:
         task.k_values = tuple(k for k in task.k_values if k <= args.cap_top_k)
         task._top_k = max(task.k_values)
 
-    # Warm/verify data is present, then time only the evaluation.
+    max_seq_length = getattr(getattr(model, "model", None), "max_seq_length", None)
+
     barrier()
     t0 = time.monotonic()
     results = mteb.evaluate(
@@ -84,7 +97,7 @@ def main() -> None:
     barrier()
     total = time.monotonic() - t0
 
-    if info.is_main:
+    if is_main_rank:
         tr = results[0]
         phases = _phase_durations(tr)
         split = next(iter(tr.scores))
@@ -92,9 +105,11 @@ def main() -> None:
         payload = {
             "model": args.model,
             "task": args.task,
-            "shard": args.shard,
-            "world_size": info.world_size,
+            "shard": None if args.baseline else args.shard,
+            "path": "mteb-default" if args.baseline else "distributed-wrapper",
+            "world_size": world_size,
             "batch_size": args.batch_size,
+            "max_seq_length": max_seq_length,
             "top_k": max(task.k_values),
             "total_s": round(total, 2),
             "phases_s": {k: round(v, 2) for k, v in phases.items()},
