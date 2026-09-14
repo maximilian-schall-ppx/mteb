@@ -21,7 +21,7 @@ import logging
 import time
 
 import mteb
-from mteb.distributed import barrier, cleanup, init_distributed_from_slurm
+from mteb.distributed import barrier, cleanup, init_distributed
 from mteb.models import DistributedSearchWrapper
 
 logger = logging.getLogger("benchmark_distributed")
@@ -71,7 +71,7 @@ def main() -> None:
         world_size, is_main_rank = 1, True
     else:
         backend = None if args.backend == "auto" else args.backend
-        info = init_distributed_from_slurm(backend=backend)
+        info = init_distributed(backend=backend)
         n_gpu = max(1, torch.cuda.device_count())
         device = f"cuda:{info.local_rank % n_gpu}"
         model = mteb.get_model(args.model, device=device)

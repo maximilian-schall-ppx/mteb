@@ -33,7 +33,7 @@ import mteb
 from mteb.distributed import (
     barrier,
     cleanup,
-    init_distributed_from_slurm,
+    init_distributed,
     main_process_first,
 )
 from mteb.models import DistributedSearchWrapper
@@ -90,7 +90,7 @@ def main() -> None:
     import torch
 
     backend = None if args.backend == "auto" else args.backend
-    info = init_distributed_from_slurm(backend=backend)
+    info = init_distributed(backend=backend)
     n_gpu = max(1, torch.cuda.device_count())
     device = f"cuda:{info.local_rank % n_gpu}"
     logger.info("Rank %d loading %s on %s", info.rank, args.model, device)
