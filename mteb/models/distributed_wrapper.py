@@ -28,18 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 def _block_bounds(n: int, world_size: int) -> list[tuple[int, int]]:
-    """Partition ``range(n)`` into ``world_size`` contiguous blocks.
-
-    Block sizes differ by at most one, so concatenating them in rank order
-    restores the original order.
-
-    Args:
-        n: Number of items to partition.
-        world_size: Number of ranks to partition across.
-
-    Returns:
-        One ``(start, end)`` tuple per rank, covering ``range(n)`` exactly.
-    """
+    """Split ``range(n)`` into ``world_size`` contiguous blocks, one per rank."""
     base, rem = divmod(n, world_size)
     bounds: list[tuple[int, int]] = []
     start = 0
@@ -84,27 +73,14 @@ def _all_gather_array(
     rank: int,
     world_size: int,
 ) -> np.ndarray:
-    """All-gather per-rank embedding blocks into the full array on every rank.
-
-    Blocks are padded to the max size so ``all_gather`` sees equal shapes, then
-    sliced back to their known counts and concatenated in rank order.
-
-    Args:
-        local: This rank's ``(counts[rank], dim)`` embeddings (possibly 0 rows).
-        counts: Row count contributed by each rank (same on all ranks).
-        rank: This process's rank.
-        world_size: Total number of ranks.
-
-    Returns:
-        The full ``(sum(counts), dim)`` float32 numpy array, identical on all ranks.
-    """
+    """All-gather per-rank embedding blocks into the full array on every rank."""
     import numpy as np
     import torch
     import torch.distributed as dist
 
     device = _collective_device()
 
-    # Ranks with 0 rows do not know the embedding dim; agree on it via all-reduce.
+    # ranks with 0 rows do not know the embedding dim; agree on it first
     local_dim = int(local.shape[1]) if local.ndim == 2 and local.shape[0] > 0 else 0
     dim_t = torch.tensor([local_dim], device=device, dtype=torch.int64)
     dist.all_reduce(dim_t, op=dist.ReduceOp.MAX)
@@ -130,17 +106,14 @@ def _all_gather_array(
 
 
 class DistributedEncoderWrapper:
-    """Shards ``encode`` work across ``torch.distributed`` ranks.
+    """Encoder wrapper that shards each ``encode`` call across torch.distributed ranks.
 
-    Wraps any [EncoderProtocol][mteb.models.EncoderProtocol]. Each rank encodes a
-    contiguous slice of the inputs, then all ranks ``all_gather`` the partial
-    embeddings to reconstruct the full ``(N, dim)`` array in original order.
-    Implements ``EncoderProtocol`` but not ``SearchProtocol``, so retrieval still
-    wraps it in ``SearchEncoderWrapper``. With no active process group, ``encode``
-    delegates to the wrapped model (exact single-process equivalence).
+    Each rank encodes a contiguous slice of the inputs and the partial embeddings
+    are ``all_gather``ed back into the full ``(N, dim)`` array in original order.
+    Without an active process group it delegates to the wrapped model.
 
     Args:
-        model: The already-loaded encoder to distribute (on this rank's device).
+        model: The encoder to distribute, already loaded on this rank's device.
     """
 
     def __init__(self, model: EncoderProtocol) -> None:
@@ -195,7 +168,7 @@ class DistributedEncoderWrapper:
             prompt_type,
         )
 
-        # Rebuild a loader over this rank's slice, keeping the original collate/batching.
+        # a loader over this rank's slice, reusing the original collate/batching
         sub_loader = DataLoader(
             Subset(dataset, range(start, end)),
             batch_size=inputs.batch_size,
@@ -236,15 +209,7 @@ class DistributedEncoderWrapper:
 def _merge_partial_results(
     partials: list[RetrievalOutputType], top_k: int
 ) -> RetrievalOutputType:
-    """Merge per-rank ``{qid: {doc_id: score}}`` results, keeping global top-k.
-
-    Args:
-        partials: One result dict per rank (in rank order).
-        top_k: Number of documents to keep per query.
-
-    Returns:
-        The merged results, identical on every rank.
-    """
+    """Merge per-rank ``{qid: {doc_id: score}}`` results, keeping global top-k."""
     import heapq
 
     merged: RetrievalOutputType = {}
@@ -260,26 +225,19 @@ def _merge_partial_results(
 
 
 class DistributedSearchWrapper:
-    """Shards retrieval search across ``torch.distributed`` ranks.
+    """Search wrapper that shards retrieval across torch.distributed ranks.
 
-    Implements [SearchProtocol][mteb.models.SearchProtocol], so retrieval tasks
-    use it directly. Dense encoders are wrapped per rank in ``SearchEncoderWrapper``;
-    ``SearchProtocol``-native models (ColBERT/PyLate, BM25) are delegated to. With
-    no active process group, ``search`` runs a single local search.
-
-    Sharding modes:
-
-    * ``"corpus"`` (default): each rank indexes and scores a disjoint corpus shard;
-      partial per-query top-k are gathered and merged. Valid when a (query, doc)
-      score is corpus-independent — dense (cosine/dot) and late-interaction (MaxSim).
-    * ``"query"``: each rank builds the full index and searches a disjoint query
-      slice; results are unioned. Required for BM25, whose scores depend on global
-      corpus statistics (IDF, average doc length). Also used for reranking.
+    Implements [SearchProtocol][mteb.models.SearchProtocol]. Dense encoders are
+    wrapped per rank in ``SearchEncoderWrapper``; ``SearchProtocol``-native models
+    (ColBERT/PyLate, BM25) are delegated to. Without an active process group it runs
+    a single local search.
 
     Args:
         model: The model to distribute (dense encoder or ``SearchProtocol``).
         corpus_chunk_size: Chunk size for the per-rank ``SearchEncoderWrapper``.
-        shard: ``"corpus"`` (dense, late-interaction) or ``"query"`` (BM25).
+        shard: ``"corpus"`` shards the corpus (dense, late-interaction, exact when the
+            score is corpus-independent); ``"query"`` shards the queries with a full
+            index per rank (required for BM25's global corpus statistics, and reranking).
     """
 
     task_corpus: CorpusDatasetType | None
