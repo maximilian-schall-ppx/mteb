@@ -332,6 +332,35 @@ class SentenceTransformerEncoderWrapper(AbsEncoder):
         self.target_sampling_rate = target_sampling_rate
         self.max_samples = max_samples
 
+        # Persistent multi-process pool for multi-GPU encoding (lazily started when
+        # `encode` receives a device list). Reused across calls so the process-spawn
+        # cost is paid once rather than per encode() call.
+        self._mp_pool: dict[str, Any] | None = None
+        self._mp_pool_devices: tuple[str, ...] | None = None
+
+    def _multi_process_pool(self, devices: list[str]) -> dict[str, Any]:
+        """Lazily start (and cache) a multi-process pool for ``devices``."""
+        import atexit
+
+        key = tuple(devices)
+        if self._mp_pool is not None and self._mp_pool_devices != key:
+            self._stop_multi_process_pool()
+        if self._mp_pool is None:
+            logger.info("Starting multi-process encode pool on %s", devices)
+            self._mp_pool = self.model.start_multi_process_pool(devices)
+            self._mp_pool_devices = key
+            atexit.register(self._stop_multi_process_pool)
+        return self._mp_pool
+
+    def _stop_multi_process_pool(self) -> None:
+        import contextlib
+
+        if self._mp_pool is not None:
+            with contextlib.suppress(Exception):  # best-effort teardown
+                self.model.stop_multi_process_pool(self._mp_pool)
+            self._mp_pool = None
+            self._mp_pool_devices = None
+
     def similarity(self, embeddings1: Array, embeddings2: Array) -> Array:
         """Compute the similarity between two collections of embeddings."""
         if hasattr(self.model, "similarity") and callable(self.model.similarity):
@@ -385,6 +414,14 @@ class SentenceTransformerEncoderWrapper(AbsEncoder):
                 },
                 deep=True,
             )
+
+        # Multi-GPU: a device *list* is turned into a persistent multi-process pool
+        # (started once, reused across encode calls) rather than re-spawning per call.
+        device = kwargs.get("device")
+        if isinstance(device, (list, tuple)) and len(device) > 1:
+            kwargs = dict(kwargs)
+            kwargs.pop("device")
+            kwargs["pool"] = self._multi_process_pool(list(device))  # type: ignore[typeddict-unknown-key]
 
         prompt = _resolve_prompt(self.model_prompts, task_metadata, prompt_type)
 
