@@ -57,7 +57,9 @@ def run(args: argparse.Namespace) -> None:
     if args.device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     else:
-        device = args.device
+        # argparse gives a string; torch.device resolves an int index but not a bare
+        # numeric string, so normalize "0" -> "cuda:0" ("cpu"/"cuda:0" pass through).
+        device = f"cuda:{args.device}" if args.device.isdigit() else args.device
 
     model = mteb.get_model(args.model, args.model_revision, device=device)
 
@@ -201,7 +203,11 @@ def _add_run_parser(subparsers: argparse._SubParsersAction[Any]) -> None:
     _add_benchmark_selection_args(parser)
 
     parser.add_argument(
-        "--device", type=int, default=None, help="Device to use for computation."
+        "--device",
+        type=str,
+        default=None,
+        help="Device to use for computation, e.g. 'cpu', 'cuda', 'cuda:0'. A bare "
+        "integer (e.g. '0') is treated as 'cuda:0'.",
     )
     parser.add_argument(
         "--output-folder",
