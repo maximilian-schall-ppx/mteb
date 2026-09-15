@@ -54,7 +54,14 @@ def run(args: argparse.Namespace) -> None:
 
     logger.info("Running with parameters: %s", args)
 
-    if args.device is None:
+    devices = (
+        [d.strip() for d in args.devices.split(",") if d.strip()]
+        if args.devices
+        else None
+    )
+    if devices:
+        device = devices[0]  # load the model on the first device
+    elif args.device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     else:
         device = args.device
@@ -76,6 +83,9 @@ def run(args: argparse.Namespace) -> None:
     encode_kwargs: EncodeKwargs = {}
     if args.batch_size is not None:
         encode_kwargs["batch_size"] = args.batch_size
+    if devices and len(devices) > 1:
+        # Forwarded to SentenceTransformer.encode(device=[...]) for multi-GPU encoding.
+        encode_kwargs["device"] = devices  # type: ignore[typeddict-unknown-key]
 
     overwrite_strategy = args.overwrite_strategy
     if args.overwrite:
@@ -202,6 +212,14 @@ def _add_run_parser(subparsers: argparse._SubParsersAction[Any]) -> None:
 
     parser.add_argument(
         "--device", type=int, default=None, help="Device to use for computation."
+    )
+    parser.add_argument(
+        "--devices",
+        type=str,
+        default=None,
+        help="Comma-separated devices for single-node multi-GPU encoding, e.g. "
+        "'cuda:0,cuda:1'. Passes the device list to SentenceTransformer.encode, "
+        "which spreads encoding across the GPUs via a multi-process pool.",
     )
     parser.add_argument(
         "--output-folder",
