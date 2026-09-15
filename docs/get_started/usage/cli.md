@@ -35,6 +35,28 @@ mteb run -m sentence-transformers/average_word_embeddings_komninos \
 This will create a folder `mteb_output/{model_name}/{model_revision}` containing the results of the model on the specified tasks supplied as a json
 file; `{task_name}.json`.
 
+### Multi-GPU encoding (single node)
+
+`--device` accepts a single device or a comma-separated list. A single value runs on
+one device; a list enables **single-node multi-GPU encoding**, spreading the encode
+work across the GPUs via SentenceTransformers' multi-process pool:
+
+```bash
+# single GPU
+mteb run -m <model> -t NFCorpus --device 0
+
+# all 8 GPUs on the node
+mteb run -m <model> -t NFCorpus --device 0,1,2,3,4,5,6,7
+```
+
+!!! note
+    A SentenceTransformers multi-process pool is started **once** (on the first
+    `encode` call) and **reused** across all subsequent calls, so the process-spawn
+    cost is paid a single time. That one-time startup is dominated by each worker
+    importing the Python dependencies; on a **networked-filesystem** environment,
+    installing the package on node-local storage (or a container image) makes startup
+    markedly faster. For multi-node scaling, see the distributed evaluation docs.
+
 
 ## Listing Available Tasks
 
@@ -108,7 +130,7 @@ This will run the model on all compatible mock tasks, print a Markdown summary t
 Available options:
 - `-m, --model MODEL`: The model to use. Prioritizes the model implementation from MTEB's model registry, or defaults to loading via `sentence-transformers`.
 - `--model-revision REVISION`: Revision of the model to load.
-- `--device DEVICE`: Device to use for computation (e.g. `cpu`, `cuda`).
+- `--device DEVICE`: Device(s) for computation. A single value (e.g. `cpu`, `0`, `cuda:0`) uses one device; a comma-separated list (e.g. `0,1,2,3`) enables single-node multi-GPU encoding.
 - `-v, --verbosity VERBOSITY`: Verbosity level (0 to 4, default: 2).
 
 The same checks are available from Python using [`mteb.mock_run`](../../contributing/adding_a_model.md#local-model-verification-using-mock-tasks), which returns the per-task status instead of writing a file.
