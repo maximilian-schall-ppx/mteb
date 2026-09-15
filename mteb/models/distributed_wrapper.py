@@ -4,6 +4,8 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
     import numpy as np
     import torch
     from torch.utils.data import DataLoader
@@ -11,6 +13,7 @@ if TYPE_CHECKING:
 
     from mteb.abstasks.task_metadata import TaskMetadata
     from mteb.models.model_meta import ModelMeta
+    from mteb.timing import TimingStack
     from mteb.types import (
         Array,
         BatchedInput,
@@ -241,6 +244,9 @@ class DistributedSearchWrapper:
     """
 
     task_corpus: CorpusDatasetType | None
+    # Signals the RetrievalEvaluator to hand us its timer and skip its own coarse
+    # "Encoding queries" phase, so the plot reflects the sharded search + gather.
+    records_own_phases = True
 
     def __init__(
         self,
@@ -254,6 +260,22 @@ class DistributedSearchWrapper:
         self.corpus_chunk_size = corpus_chunk_size
         self.shard = shard
         self.task_corpus = None
+        self._eval_timer: tuple[TimingStack, str, str] | None = None
+
+    def set_eval_timer(
+        self, timer: TimingStack, hf_split: str, hf_subset: str
+    ) -> None:
+        """Receive the evaluator's TimingStack so ``search`` can record sub-phases."""
+        self._eval_timer = (timer, hf_split, hf_subset)
+
+    def _phase(self, name: str) -> AbstractContextManager:
+        """Context manager recording ``name`` in the eval timer (no-op if unset)."""
+        import contextlib
+
+        if self._eval_timer is None:
+            return contextlib.nullcontext()
+        timer, hf_split, hf_subset = self._eval_timer
+        return timer(name, split=hf_split, subset=hf_subset)
 
     @property
     def mteb_model_meta(self) -> ModelMeta:
@@ -346,9 +368,10 @@ class DistributedSearchWrapper:
         )
 
         if not _is_distributed():
-            return self._local_search(
-                self.task_corpus, queries, top_ranked=top_ranked, **common
-            )
+            with self._phase("Encoding + search"):
+                return self._local_search(
+                    self.task_corpus, queries, top_ranked=top_ranked, **common
+                )
 
         import torch.distributed as dist
 
@@ -377,11 +400,13 @@ class DistributedSearchWrapper:
             len(self.task_corpus),
             task_metadata.name,
         )
-        partial = self._local_search(shard, queries, top_ranked=None, **common)
+        with self._phase("Encoding + search (corpus shard)"):
+            partial = self._local_search(shard, queries, top_ranked=None, **common)
 
-        gathered: list[RetrievalOutputType] = [{} for _ in range(world_size)]
-        dist.all_gather_object(gathered, partial)
-        return _merge_partial_results(gathered, top_k)
+        with self._phase("Gather + merge results"):
+            gathered: list[RetrievalOutputType] = [{} for _ in range(world_size)]
+            dist.all_gather_object(gathered, partial)
+            return _merge_partial_results(gathered, top_k)
 
     def _query_sharded_search(  # noqa: PLR0913
         self,
@@ -414,25 +439,27 @@ class DistributedSearchWrapper:
         )
 
         partial: RetrievalOutputType
-        if len(q_shard) == 0:
-            partial = {}
-        else:
-            tr = None
-            if top_ranked is not None:
-                shard_ids = set(q_shard["id"])
-                tr = {q: d for q, d in top_ranked.items() if q in shard_ids}
-            partial = self._local_search(
-                corpus,
-                q_shard,
-                task_metadata=task_metadata,
-                hf_split=hf_split,
-                hf_subset=hf_subset,
-                top_k=top_k,
-                encode_kwargs=encode_kwargs,
-                top_ranked=tr,
-                num_proc=num_proc,
-            )
+        with self._phase("Encoding + search (query shard)"):
+            if len(q_shard) == 0:
+                partial = {}
+            else:
+                tr = None
+                if top_ranked is not None:
+                    shard_ids = set(q_shard["id"])
+                    tr = {q: d for q, d in top_ranked.items() if q in shard_ids}
+                partial = self._local_search(
+                    corpus,
+                    q_shard,
+                    task_metadata=task_metadata,
+                    hf_split=hf_split,
+                    hf_subset=hf_subset,
+                    top_k=top_k,
+                    encode_kwargs=encode_kwargs,
+                    top_ranked=tr,
+                    num_proc=num_proc,
+                )
 
-        gathered: list[RetrievalOutputType] = [{} for _ in range(world_size)]
-        dist.all_gather_object(gathered, partial)
-        return _merge_partial_results(gathered, top_k)
+        with self._phase("Gather + merge results"):
+            gathered: list[RetrievalOutputType] = [{} for _ in range(world_size)]
+            dist.all_gather_object(gathered, partial)
+            return _merge_partial_results(gathered, top_k)
