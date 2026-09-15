@@ -54,7 +54,15 @@ def run(args: argparse.Namespace) -> None:
 
     logger.info("Running with parameters: %s", args)
 
-    if args.device is None:
+    dist_info = None
+    if args.distributed:
+        from mteb.distributed import init_distributed
+
+        backend = None if args.dist_backend == "auto" else args.dist_backend
+        dist_info = init_distributed(backend=backend)
+        n_gpu = max(1, torch.cuda.device_count())
+        device = f"cuda:{dist_info.local_rank % n_gpu}"
+    elif args.device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
     else:
         device = args.device
@@ -72,6 +80,23 @@ def run(args: argparse.Namespace) -> None:
             tasks=args.tasks,
             eval_splits=args.eval_splits,
         )
+
+    if dist_info is not None:
+        from mteb.models import DistributedEncoderWrapper, DistributedSearchWrapper
+
+        all_retrieval = all(
+            getattr(t.metadata, "type", None) == "Retrieval" for t in tasks
+        )
+        if all_retrieval:
+            model = DistributedSearchWrapper(model, shard=args.shard)
+        else:
+            model = DistributedEncoderWrapper(model)
+
+    if args.cap_top_k is not None:
+        for t in tasks:
+            if hasattr(t, "k_values"):
+                t.k_values = tuple(k for k in t.k_values if k <= args.cap_top_k)
+                t._top_k = max(t.k_values)
 
     encode_kwargs: EncodeKwargs = {}
     if args.batch_size is not None:
@@ -95,15 +120,24 @@ def run(args: argparse.Namespace) -> None:
         )
         prediction_folder = args.output_folder
 
+    # Under --distributed, gate all disk writes to rank 0; the other ranks run
+    # identical control flow (needed to keep collectives aligned) but write nothing.
+    is_main = dist_info is None or dist_info.is_main
     mteb.evaluate(
         model,
         tasks,
-        cache=ResultCache(args.output_folder),
+        cache=ResultCache(args.output_folder) if is_main else None,
         co2_tracker=args.co2_tracker,
         overwrite_strategy=overwrite_strategy,
         encode_kwargs=encode_kwargs,
-        prediction_folder=prediction_folder,
+        prediction_folder=prediction_folder if is_main else None,
     )
+
+    if dist_info is not None:
+        from mteb.distributed import barrier, cleanup
+
+        barrier()
+        cleanup()
 
 
 def _available_benchmarks(args: argparse.Namespace) -> None:
@@ -202,6 +236,33 @@ def _add_run_parser(subparsers: argparse._SubParsersAction[Any]) -> None:
 
     parser.add_argument(
         "--device", type=int, default=None, help="Device to use for computation."
+    )
+    parser.add_argument(
+        "--distributed",
+        action="store_true",
+        help="Shard a single task across torch.distributed ranks (one rank per GPU), "
+        "launched with srun or torchrun. init_distributed() auto-detects the launcher.",
+    )
+    parser.add_argument(
+        "--shard",
+        choices=["corpus", "query"],
+        default="corpus",
+        help="Retrieval sharding mode when --distributed: 'corpus' splits documents "
+        "(dense, late-interaction); 'query' splits queries with a full index per rank "
+        "(BM25/lexical, reranking).",
+    )
+    parser.add_argument(
+        "--dist-backend",
+        choices=["auto", "nccl", "gloo"],
+        default="gloo",
+        help="Process-group backend for --distributed (default gloo).",
+    )
+    parser.add_argument(
+        "--cap-top-k",
+        type=int,
+        default=None,
+        help="Cap max(k_values) on retrieval tasks (keeps the result all-gather cheap "
+        "for very large query sets).",
     )
     parser.add_argument(
         "--output-folder",
