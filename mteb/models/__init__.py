@@ -1,5 +1,6 @@
 from .cache_wrappers import CacheBackendProtocol, CachedEmbeddingWrapper
 from .compression_wrappers import CompressionWrapper
+from .distributed_wrapper import DistributedEncoderWrapper, DistributedSearchWrapper
 from .hybrid_wrappers import HybridSearch
 from .model_meta import ModelMeta
 from .models_protocols import (
@@ -30,6 +31,8 @@ __all__ = [
     "CompressionWrapper",
     "CrossEncoderProtocol",
     "CrossEncoderWrapper",
+    "DistributedEncoderWrapper",
+    "DistributedSearchWrapper",
     "EncoderProtocol",
     "HybridSearch",
     "IndexEncoderSearchProtocol",

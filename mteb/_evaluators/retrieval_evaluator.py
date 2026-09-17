@@ -75,6 +75,25 @@ class RetrievalEvaluator(Evaluator):
             num_proc=num_proc,
         )
         end_time = time.monotonic()
+
+        search_kwargs = dict(
+            queries=self.queries,
+            top_k=self.top_k,
+            task_metadata=self.task_metadata,
+            hf_split=self.hf_split,
+            hf_subset=self.hf_subset,
+            encode_kwargs=encode_kwargs,
+            top_ranked=self.top_ranked,
+            num_proc=num_proc,
+        )
+
+        # Search models that record their own timing phases (e.g. the distributed
+        # search wrapper) get the timer and are not wrapped in a single coarse phase,
+        # so the recorded phases reflect the actual sub-steps.
+        if getattr(search_model, "records_own_phases", False):
+            search_model.set_eval_timer(self.timer, self.hf_split, self.hf_subset)
+            return search_model.search(**search_kwargs)
+
         encodes_corpus_during_search = isinstance(
             search_model, SearchCrossEncoderWrapper
         ) or (
@@ -102,16 +121,7 @@ class RetrievalEvaluator(Evaluator):
             subset=self.hf_subset,
             log_message="Running retrieval task - Searching queries...",
         ):
-            return search_model.search(
-                queries=self.queries,
-                top_k=self.top_k,
-                task_metadata=self.task_metadata,
-                hf_split=self.hf_split,
-                hf_subset=self.hf_subset,
-                encode_kwargs=encode_kwargs,
-                top_ranked=self.top_ranked,
-                num_proc=num_proc,
-            )
+            return search_model.search(**search_kwargs)
 
     def evaluate(  # noqa: PLR6301
         self,
