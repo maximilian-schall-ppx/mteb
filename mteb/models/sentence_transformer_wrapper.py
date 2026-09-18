@@ -386,6 +386,14 @@ class SentenceTransformerEncoderWrapper(AbsEncoder):
                 deep=True,
             )
 
+        # Multi-GPU: a device *list* (e.g. ["cuda:0", "cuda:1"]) is forwarded as-is to
+        # SentenceTransformer.encode, which spawns a multi-process pool for that call,
+        # shards the batch across the devices, and tears the pool down when done.
+        device = kwargs.get("device")
+        if isinstance(device, (list, tuple)) and len(device) > 1:
+            kwargs = dict(kwargs)
+            kwargs["device"] = list(device)
+
         prompt = _resolve_prompt(self.model_prompts, task_metadata, prompt_type)
 
         is_multimodal = _setup_modality_collator(
