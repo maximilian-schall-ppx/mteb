@@ -26,6 +26,23 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _parse_devices(spec: str | None) -> list[str]:
+    """Parse ``--device`` into a device list.
+
+    Accepts a single value or a comma-separated list; bare integers become
+    ``cuda:N``. Examples: ``"0"`` -> ``["cuda:0"]``; ``"0,1,3"`` ->
+    ``["cuda:0", "cuda:1", "cuda:3"]``; ``"cpu"`` -> ``["cpu"]``; ``None`` -> ``[]``.
+    """
+    if not spec:
+        return []
+    out = []
+    for raw in str(spec).split(","):
+        tok = raw.strip()
+        if tok:
+            out.append(f"cuda:{tok}" if tok.isdigit() else tok)
+    return out
+
+
 def run(args: argparse.Namespace) -> None:
     """Run a model on a set of tasks."""
     # set logging based on verbosity level
@@ -54,10 +71,11 @@ def run(args: argparse.Namespace) -> None:
 
     logger.info("Running with parameters: %s", args)
 
-    if args.device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+    devices = _parse_devices(args.device)
+    if devices:
+        device = devices[0]  # load the model on the first device
     else:
-        device = args.device
+        device = "cuda" if torch.cuda.is_available() else "cpu"
 
     model = mteb.get_model(args.model, args.model_revision, device=device)
 
@@ -76,6 +94,9 @@ def run(args: argparse.Namespace) -> None:
     encode_kwargs: EncodeKwargs = {}
     if args.batch_size is not None:
         encode_kwargs["batch_size"] = args.batch_size
+    if len(devices) > 1:
+        # Forwarded to SentenceTransformer.encode(device=[...]) for multi-GPU encoding.
+        encode_kwargs["device"] = devices  # type: ignore[typeddict-unknown-key]
 
     overwrite_strategy = args.overwrite_strategy
     if args.overwrite:
@@ -201,7 +222,13 @@ def _add_run_parser(subparsers: argparse._SubParsersAction[Any]) -> None:
     _add_benchmark_selection_args(parser)
 
     parser.add_argument(
-        "--device", type=int, default=None, help="Device to use for computation."
+        "--device",
+        type=str,
+        default=None,
+        help="Device(s) for computation. A single value (e.g. '0', 'cuda:0', 'cpu') "
+        "runs on one device; a comma-separated list (e.g. '0,1,2,3') enables "
+        "single-node multi-GPU encoding, spreading encoding across the GPUs via "
+        "SentenceTransformer's multi-process pool.",
     )
     parser.add_argument(
         "--output-folder",
