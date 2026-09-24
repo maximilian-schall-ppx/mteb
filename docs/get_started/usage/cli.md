@@ -44,6 +44,8 @@ mteb run -m <model> -t NFCorpus --device 0            # single GPU
 mteb run -m <model> -t NFCorpus --device 0,1,2,3      # 4 GPUs on the node
 ```
 
+A SentenceTransformers multi-process pool is started once and reused across all encode calls (torn down at exit), so the process-spawn cost is paid a single time rather than per corpus chunk.
+
 
 ## Listing Available Tasks
 

@@ -185,6 +185,8 @@ To encode on multiple GPUs on a single node, pass a list of devices in `encode_k
     mteb run -t NFCorpus -m <model> --device 0,1,2,3
     ```
 
+A SentenceTransformers multi-process pool is started once and reused across all encode calls (torn down at exit), so the pool-spawn cost is amortised across every corpus chunk.
+
 
 ### Speeding Download
 
